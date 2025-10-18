@@ -1,0 +1,19 @@
+# config.toml
+[http]
+timeout_secs = 10
+pool_max_idle_per_host = 10
+retry_attempts = 3
+retry_delay_ms = 1000
+
+[fetcher]
+max_concurrent_requests = 10
+hacker_news_limit = 15
+
+[rate_limit]
+requests_per_second = 5
+
+[analyzer]
+rayon_threads = 4
+
+[keywords]
+values = ["rust", "ai", "performance", "async"]
