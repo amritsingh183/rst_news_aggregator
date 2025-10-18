@@ -8,10 +8,6 @@ pub enum AppError {
     #[error("Failed to parse response from {origin}: {message}")]
     ParseError { origin: String, message: String },
 
-    #[allow(dead_code)]
-    #[error("Rate limit exceeded: {0}")]
-    RateLimitError(String),
-
     #[error("Timeout error: {0}")]
     TimeoutError(String),
 

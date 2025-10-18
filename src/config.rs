@@ -1,9 +1,7 @@
 use crate::error::{AppError, Result};
-use once_cell::sync::Lazy;
+use config::{Config as ConfigBuilder, Environment, File};
 use serde::Deserialize;
 use std::time::Duration;
-
-use ::config::{Config as ConfigBuilder, Environment, File};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct HttpConfig {
@@ -44,88 +42,65 @@ pub struct Config {
 }
 
 impl Config {
+    /// Load configuration from config.toml and environment variables
+    /// Returns an error if configuration is invalid rather than using defaults
     pub fn load() -> Result<Self> {
-        let config = ConfigBuilder::builder()
+        let settings = ConfigBuilder::builder()
             .add_source(File::with_name("config").required(false))
-            .add_source(Environment::with_prefix("APP"))
+            .add_source(Environment::with_prefix("APP").separator("__"))
             .build()
-            .map_err(|e| AppError::ConfigError(e.to_string()))?;
+            .map_err(|e| AppError::ConfigError(format!("Failed to build config: {e}")))?;
 
-        let cfg: Self = config
+        let config: Config = settings
             .try_deserialize()
-            .map_err(|e| AppError::ConfigError(e.to_string()))?;
+            .map_err(|e| AppError::ConfigError(format!("Failed to deserialize config: {e}")))?;
 
-        cfg.validate()?;
-        Ok(cfg)
+        // Validate configuration
+        config.validate()?;
+
+        Ok(config)
     }
 
+    /// Validate configuration values
     fn validate(&self) -> Result<()> {
         if self.http.timeout_secs == 0 {
             return Err(AppError::ConfigError(
-                "http.timeout_secs must be > 0".into(),
+                "timeout_secs must be greater than 0".into(),
             ));
         }
-        if self.fetcher.max_concurrent_requests == 0 {
+        if self.http.retry_attempts == 0 {
             return Err(AppError::ConfigError(
-                "fetcher.max_concurrent_requests must be > 0".into(),
+                "retry_attempts must be greater than 0".into(),
             ));
         }
         if self.rate_limit.requests_per_second == 0 {
             return Err(AppError::ConfigError(
-                "rate_limit.requests_per_second must be > 0".into(),
+                "requests_per_second must be greater than 0".into(),
+            ));
+        }
+        if self.fetcher.max_concurrent_requests == 0 {
+            return Err(AppError::ConfigError(
+                "max_concurrent_requests must be greater than 0".into(),
             ));
         }
         if self.analyzer.rayon_threads == 0 {
             return Err(AppError::ConfigError(
-                "analyzer.rayon_threads must be > 0".into(),
+                "rayon_threads must be greater than 0".into(),
+            ));
+        }
+        if self.keywords.values.is_empty() {
+            return Err(AppError::ConfigError(
+                "keywords list cannot be empty".into(),
             ));
         }
         Ok(())
     }
 
-    pub fn http_timeout(&self) -> Duration {
+    pub fn timeout(&self) -> Duration {
         Duration::from_secs(self.http.timeout_secs)
     }
 
     pub fn retry_delay(&self) -> Duration {
         Duration::from_millis(self.http.retry_delay_ms)
-    }
-}
-
-pub static CONFIG: Lazy<Config> = Lazy::new(|| {
-    Config::load().unwrap_or_else(|_| {
-        eprintln!("Failed to load config, using defaults");
-        Config::default()
-    })
-});
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            http: HttpConfig {
-                timeout_secs: 10,
-                pool_max_idle_per_host: 10,
-                retry_attempts: 3,
-                retry_delay_ms: 1000,
-            },
-            fetcher: FetcherConfig {
-                max_concurrent_requests: 10,
-                hacker_news_limit: 15,
-            },
-            rate_limit: RateLimitConfig {
-                requests_per_second: 5,
-            },
-            analyzer: AnalyzerConfig {
-                rayon_threads: num_cpus::get(), // dynamic
-            },
-            keywords: KeywordsConfig {
-                values: vec![
-                    "rust".to_string(),
-                    "ai".to_string(),
-                    "performance".to_string(),
-                    "async".to_string(),
-                ],
-            },
-        }
     }
 }

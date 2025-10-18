@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::info;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Metrics {
     articles_fetched: Arc<AtomicU64>,
     articles_failed: Arc<AtomicU64>,
@@ -12,12 +12,7 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn new() -> Self {
-        Self {
-            articles_fetched: Arc::new(AtomicU64::new(0)),
-            articles_failed: Arc::new(AtomicU64::new(0)),
-            http_requests: Arc::new(AtomicU64::new(0)),
-            http_failures: Arc::new(AtomicU64::new(0)),
-        }
+        Self::default()
     }
 
     pub fn record_article_fetched(&self) {
@@ -42,13 +37,7 @@ impl Metrics {
             articles_failed = self.articles_failed.load(Ordering::Relaxed),
             http_requests = self.http_requests.load(Ordering::Relaxed),
             http_failures = self.http_failures.load(Ordering::Relaxed),
-            "Metrics summary"
+            "Final metrics"
         );
-    }
-}
-
-impl Default for Metrics {
-    fn default() -> Self {
-        Self::new()
     }
 }

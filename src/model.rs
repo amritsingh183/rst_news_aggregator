@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Article {
@@ -35,15 +36,10 @@ impl Article {
         &self.source
     }
 
-    #[allow(dead_code)]
-    pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-
-    pub fn searchable_text(&self) -> String {
+    pub fn searchable_text(&self) -> Cow<'_, str> {
         match &self.description {
-            Some(desc) => format!("{} {}", self.title, desc),
-            None => self.title.clone(),
+            Some(desc) => Cow::Owned(format!("{} {}", self.title, desc)),
+            None => Cow::Borrowed(&self.title),
         }
     }
 }

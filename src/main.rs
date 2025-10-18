@@ -7,7 +7,7 @@ mod model;
 mod rate_limiter;
 
 use crate::analyzer::ScoredArticle;
-use crate::config::CONFIG;
+use crate::config::Config;
 use crate::error::{AppError, Result};
 use crate::fetcher::Fetcher;
 use crate::metrics::Metrics;
@@ -29,31 +29,34 @@ async fn main() -> Result<()> {
         .init();
 
     info!("Starting article aggregator");
+
+    // Load and validate configuration explicitly
+    let config = Config::load()?;
+    
     info!(
-        timeout_secs = CONFIG.http.timeout_secs,
-        max_concurrent = CONFIG.fetcher.max_concurrent_requests,
-        rate_limit = CONFIG.rate_limit.requests_per_second,
-        rayon_threads = CONFIG.analyzer.rayon_threads,
+        timeout_secs = config.http.timeout_secs,
+        max_concurrent = config.fetcher.max_concurrent_requests,
+        rate_limit = config.rate_limit.requests_per_second,
+        rayon_threads = config.analyzer.rayon_threads,
         "Configuration loaded"
     );
 
-    analyzer::init_rayon_pool();
+    analyzer::init_rayon_pool(config.analyzer.rayon_threads);
 
     let client = Client::builder()
-        .timeout(CONFIG.http_timeout())
-        .pool_max_idle_per_host(CONFIG.http.pool_max_idle_per_host)
-        .user_agent("article-aggregator/0.1.0")
+        .timeout(config.timeout())
+        .pool_max_idle_per_host(config.http.pool_max_idle_per_host)
         .build()
-        .map_err(|e| AppError::http_error("client", e))?;
+        .map_err(|e| AppError::ConfigError(format!("Failed to build HTTP client: {e}")))?;
 
     let cancel_token = CancellationToken::new();
-    let shutdown_token = cancel_token.clone();
+    let cancel_clone = cancel_token.clone();
 
     tokio::spawn(async move {
         match signal::ctrl_c().await {
             Ok(()) => {
-                info!("Shutdown signal received, initiating graceful shutdown");
-                shutdown_token.cancel();
+                info!("Shutdown signal received");
+                cancel_clone.cancel();
             }
             Err(err) => {
                 error!(error = %err, "Failed to listen for shutdown signal");
@@ -62,97 +65,60 @@ async fn main() -> Result<()> {
     });
 
     let metrics = Metrics::new();
-    let fetcher = Fetcher::new(client, cancel_token.clone(), metrics.clone());
+    let fetcher = Fetcher::new(client, cancel_token.clone(), metrics.clone(), &config);
 
-    info!("Fetching articles from all sources");
-
-    let (hn_results, blog_results) =
-        tokio::join!(fetcher.fetch_hacker_news(), fetcher.fetch_rust_blog());
-
-    if cancel_token.is_cancelled() {
-        info!("Shutdown requested, cleaning up");
-        return Ok(());
-    }
-
-    let mut articles = Vec::new();
-
-    for (source, results) in [("HackerNews", hn_results), ("Rust Blog", blog_results)] {
-        for result in results {
-            match result {
-                Ok(article) => {
-                    articles.push(article);
-                    metrics.record_article_fetched();
-                }
-                Err(e) => {
-                    warn!(source = source, error = %e, "Failed to fetch article");
-                    metrics.record_article_failed();
-                }
-            }
+    match run_aggregator(fetcher, &config).await {
+        Ok(scored) => {
+            display_results(&scored);
+            metrics.log_summary();
+            Ok(())
+        }
+        Err(e) if matches!(e, AppError::ShutdownError) => {
+            warn!("Gracefully shutting down");
+            metrics.log_summary();
+            Ok(())
+        }
+        Err(e) => {
+            error!(error = %e, "Aggregator failed");
+            metrics.log_summary();
+            Err(e)
         }
     }
+}
+
+async fn run_aggregator(fetcher: Fetcher, config: &Config) -> Result<Vec<ScoredArticle>> {
+    let articles = fetcher.fetch_all().await?;
 
     if articles.is_empty() {
-        error!("No articles were successfully fetched");
-        return Err(AppError::NoArticlesError("all sources".to_string()));
+        warn!("No articles fetched from any source");
+        return Ok(Vec::new());
     }
 
-    info!(
-        article_count = articles.len(),
-        "Successfully processed articles"
-    );
+    info!(count = articles.len(), "Fetched articles successfully");
 
-    info!(
-        keywords = ?CONFIG.keywords.values,
-        "Analyzing articles with keywords"
-    );
-
-    let keywords = CONFIG.keywords.values.clone();
-
-    //first ? handles JoinError, second handles ? Result<Vec<ScoredArticle>>
-    let scored_articles =
-        tokio::task::spawn_blocking(move || analyzer::score_articles(articles, &keywords))
-            .await
-            .map_err(|e| {
-                AppError::parse_error("analyzer", format!("Analysis task panicked: {}", e))
-            })??;
-
-    if cancel_token.is_cancelled() {
-        info!("Shutdown requested after analysis");
-        return Ok(());
-    }
-
-    let mut ranked = scored_articles;
-    ranked.sort_by(|a, b| {
+    let mut scored = analyzer::score_articles(articles, &config.keywords.values)?;
+    
+    // Filter out NaN scores and sort
+    scored.retain(|article| article.relevance_score().is_finite());
+    scored.sort_by(|a, b| {
         b.relevance_score()
             .partial_cmp(&a.relevance_score())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    display_results(&ranked);
-    metrics.log_summary();
-
-    info!("Application completed successfully");
-    Ok(())
+    Ok(scored)
 }
 
-fn display_results(ranked: &[ScoredArticle]) {
-    info!("=== Top 10 Results ===");
-    println!("\n{}", "=".repeat(80));
-    println!("{:^80}", "TOP 10 ARTICLES");
-    println!("{}", "=".repeat(80));
-
-    for (i, item) in ranked.iter().take(10).enumerate() {
-        println!(
-            "\n{}. {} [Score: {:.2}]",
-            i + 1,
-            item.article().title(),
-            item.relevance_score()
+fn display_results(articles: &[ScoredArticle]) {
+    info!("=== Top Relevant Articles ===");
+    for (i, scored) in articles.iter().take(10).enumerate() {
+        info!(
+            rank = i + 1,
+            score = format!("{:.2}", scored.relevance_score()),
+            title = scored.article().title(),
+            source = scored.article().source(),
+            url = scored.article().url(),
+            keywords = ?scored.matched_keywords(),
         );
-        println!("   Source: {}", item.article().source());
-        println!("   URL: {}", item.article().url());
-        if !item.matched_keywords().is_empty() {
-            println!("   Matched: {}", item.matched_keywords().join(", "));
-        }
-        println!("{}", "-".repeat(80));
     }
 }

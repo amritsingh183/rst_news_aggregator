@@ -1,4 +1,3 @@
-use crate::config::CONFIG;
 use crate::error::{AppError, Result};
 use crate::model::Article;
 use aho_corasick::AhoCorasick;
@@ -26,28 +25,24 @@ impl ScoredArticle {
     }
 }
 
-/// Initialize a separate Rayon thread pool to avoid blocking Tokio runtime
-pub fn init_rayon_pool() {
-    // Build global only once in program lifetime
+pub fn init_rayon_pool(num_threads: usize) {
     rayon::ThreadPoolBuilder::new()
-        .num_threads(CONFIG.analyzer.rayon_threads)
-        .thread_name(|i| format!("rayon-worker-{}", i))
+        .num_threads(num_threads)
         .build_global()
-        .expect("Failed to build Rayon thread pool");
+        .expect("Failed to initialize Rayon thread pool");
 }
 
-/// Score articles using efficient Aho-Corasick algorithm for keyword matching
 pub fn score_articles(articles: Vec<Article>, keywords: &[String]) -> Result<Vec<ScoredArticle>> {
     if keywords.is_empty() {
         return Err(AppError::AnalyzerError("no keywords configured".into()));
     }
 
-    // Build Aho-Corasick automaton once for efficient multi-pattern matching
     let patterns: Vec<&str> = keywords.iter().map(|s| s.as_str()).collect();
     let ac = AhoCorasick::builder()
         .ascii_case_insensitive(true)
         .build(&patterns)
         .map_err(|e| AppError::AnalyzerError(format!("failed to build AC: {e}")))?;
+
     let ac = Arc::new(ac);
 
     let scored = articles
@@ -70,34 +65,31 @@ fn calculate_relevance(
     ac: &AhoCorasick,
     keywords: &[String],
 ) -> (f64, Vec<String>) {
-    // Lowercasing once to align with ASCII-insensitive matching and stable indices
     let text = article.searchable_text().to_lowercase();
 
-    // (count, reserved) layout keeps option to weight by field later
-    let mut keyword_counts: Vec<(usize, usize)> = vec![(0, 0); keywords.len()];
-    let mut total_matches = 0;
+    let mut keyword_counts: Vec<usize> = vec![0; keywords.len()];
 
     for mat in ac.find_iter(&text) {
-        let pattern_id = mat.pattern().as_usize();
-        if let Some(slot) = keyword_counts.get_mut(pattern_id) {
-            slot.0 += 1;
-            total_matches += 1;
+        keyword_counts[mat.pattern().as_usize()] += 1;
+    }
+
+    let mut matched_keywords = Vec::new();
+    let mut total_score = 0.0;
+
+    for (idx, &count) in keyword_counts.iter().enumerate() {
+        if count > 0 {
+            matched_keywords.push(keywords[idx].clone());
+            // Logarithmic scoring to prevent single keyword dominance
+            total_score += 1.0 + (count as f64).ln();
         }
     }
 
-    let unique_keywords = keyword_counts.iter().filter(|(c, _)| *c > 0).count();
-    let score = if total_matches == 0 {
-        0.0
+    // Ensure score is finite
+    let final_score = if total_score.is_finite() {
+        total_score
     } else {
-        (total_matches as f64).powf(1.5) * (unique_keywords as f64).powf(1.2)
+        0.0
     };
 
-    let matched: Vec<String> = keyword_counts
-        .iter()
-        .enumerate()
-        .filter(|(_, (count, _))| *count > 0)
-        .map(|(idx, _)| keywords[idx].clone())
-        .collect();
-
-    (score, matched)
+    (final_score, matched_keywords)
 }
