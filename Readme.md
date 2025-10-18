@@ -1,7 +1,4 @@
-# Comprehensive Rust Programming Guide( for all concepts used in this project)
-
-### Based on a Real-World Article Aggregator Project
-
+# Comprehensive Rust Programming Guide (for all concepts used in this project)
 
 ***
 
@@ -561,7 +558,7 @@ pub type Result<T> = std::result::Result<T, AppError>;
 impl Config {
     pub fn load() -> Result<Self> {
         let config = ConfigBuilder::builder()
-            .add_source(File::with_name("config").required(false))
+            .add_source(File::with_name("config.toml").required(false))
             .add_source(Environment::with_prefix("APP"))
             .build()
             .map_err(|e| AppError::ConfigError(e.to_string()))?;
@@ -590,7 +587,7 @@ impl Config {
 // What ? operator replaces
 pub fn load() -> Result<Self> {
     let config = match ConfigBuilder::builder()
-        .add_source(File::with_name("config").required(false))
+        .add_source(File::with_name("config.toml").required(false))
         .add_source(Environment::with_prefix("APP"))
         .build() 
     {
@@ -638,7 +635,7 @@ let scored_articles = tokio::task::spawn_blocking(move || {
 })
 .await  // Returns: Result<Result<Vec<ScoredArticle>, AppError>, JoinError>
 ?       // First ? handles JoinError (task panic)
-?;      // Second ? handles AppError (analyzer error)
+?;      // Second ? unwraps AppError (analyzer error)
 
 // Equivalent to:
 let join_result = tokio::task::spawn_blocking(move || {
@@ -1151,7 +1148,8 @@ match timeout(CONFIG.http_timeout(), operation()).await {
 pub fn score_articles(articles: Vec<Article>, keywords: &[String]) -> Result<Vec<ScoredArticle>> {
     let ac = AhoCorasick::builder()
         .ascii_case_insensitive(true)
-        .build(&patterns)?;
+        .build(keywords)
+        .map_err(|e| AppError::AnalyzerError(e.to_string()))?;
     
     let ac = Arc::new(ac);
     //       ^^^^^^^^
@@ -1168,9 +1166,12 @@ pub fn score_articles(articles: Vec<Article>, keywords: &[String]) -> Result<Vec
 }
 ```
 
-**How Arc Works:**
+**How Arc Works (Conceptual Model):**
 
 ```rust
+// Simplified conceptual representation of Arc internals
+// (Real implementation has more complexity and safety guarantees)
+
 struct Arc<T> {
     ptr: *const ArcInner<T>,  // Pointer to heap-allocated data
 }
@@ -1193,7 +1194,8 @@ impl<T> Drop for Arc<T> {
         // Atomically decrement reference count
         if self.inner().strong_count.fetch_sub(1, Ordering::Release) == 1 {
             // Last reference - deallocate
-            unsafe { drop(Box::from_raw(self.ptr)) }
+            // (Real implementation uses proper memory ordering, including an Acquire fence
+            // on the last Release before deallocation to prevent use-after-free across threads)
         }
     }
 }
@@ -1239,18 +1241,20 @@ impl Metrics {
 self.counter.fetch_add(1, Ordering::Relaxed);
 
 // Ordering::Acquire
-// - Prevents reordering of subsequent reads
+// - Prevents subsequent operations from moving before this load
+// - Pairs with a Release store in another thread to make prior writes visible after the load
 // - Use when loading data that must be synchronized
 
 let value = self.flag.load(Ordering::Acquire);
-// All reads after this see updates before the store
+// Prior writes in the releasing thread become visible after this load when paired with Release
 
 // Ordering::Release
-// - Prevents reordering of previous writes
+// - Prevents prior operations from moving after this store
+// - Pairs with an Acquire load in another thread to publish prior writes
 // - Use when storing data that must be synchronized
 
 self.flag.store(true, Ordering::Release);
-// All writes before this are visible after the load
+// Prior writes become visible to a thread that performs a matching Acquire load
 
 // Ordering::SeqCst
 // - Sequentially consistent (strongest)
@@ -1403,6 +1407,7 @@ pub fn init_rayon_pool() {
         // Sets as the global default thread pool
         
         .expect("Failed to build Rayon thread pool");
+// Note: build_global() can only be called once per process; subsequent calls will return an error.
 }
 
 // src/config.rs
@@ -1617,8 +1622,8 @@ FnMut (also implements FnOnce)
   ↑
 Fn (also implements FnMut and FnOnce)
 
-Fn is the most restrictive (most functions satisfy it)
-FnOnce is the least restrictive (all closures satisfy it)
+Fn is the least intrusive for closures that only read captured values and can be called many times (most simple closures and function items implement Fn)
+FnOnce is the least reusable; it consumes captured values and guarantees the closure can be called at most once
 ```
 
 
@@ -1774,7 +1779,7 @@ println!("{}", article.title());  // "Rust Async"
 ```
 
 
-### Field Attributes
+### Field Attributes and Option Handling
 
 ```rust
 // src/model.rs
@@ -1782,55 +1787,60 @@ println!("{}", article.title());  // "Rust Async"
 pub struct HackerNewsItem {
     pub id: u64,
     pub title: String,
-    
-    #[serde(default)]
     //      ^^^^^^^
-    // If field is missing in JSON, use Default::default()
+    // Use Default::default() if field is missing
+    // For Option<T>, this means None
     pub url: Option<String>,
-    
-    #[serde(default)]
-    pub text: Option<String>,
+    pub text: Option<String>, // Missing field deserializes to None automatically
 }
 ```
 
-**How \#[serde(default)] Works:**
+**Important: Option<T> Special Handling:**
 
 ```rust
-// JSON with all fields
-let json1 = r#"{"id":123,"title":"Test","url":"https://...","text":"Body"}"#;
-let item1: HackerNewsItem = serde_json::from_str(json1)?;
-// item1.url = Some("https://...")
-// item1.text = Some("Body")
+// Option<T> fields automatically deserialize missing fields as None
+// even WITHOUT #[serde(default)]!
+
+#[derive(Deserialize)]
+struct Example {
+    // Both of these behave the same for missing fields:
+    field1: Option<String>,           // Missing → None (automatic)
+    field2: Option<String>,           // Missing → None (explicit)
+}
 
 // JSON with missing optional fields
-let json2 = r#"{"id":123,"title":"Test"}"#;
-let item2: HackerNewsItem = serde_json::from_str(json2)?;
-// item2.url = None (Serde treats Option<T> specially - missing = None)
-// item2.text = None (even without #[serde(default)])
+let json = r#"{"id":123,"title":"Test"}"#;
+let item: HackerNewsItem = serde_json::from_str(json)?;
+// item.url = None (automatically, even without #[serde(default)])
+// item.text = None
 
-// Note: Option<T> fields automatically default to None when missing.
-// #[serde(default)] is needed for other types like Vec<T>, String, etc.
+// When to use #[serde(default)] on Option<T>:
+// - For documentation clarity
+// - When you want custom default behavior
+// - For consistency with other fields
 ```
 
-**Example where #[serde(default)] is actually needed:**
+**Using \#[serde(default)] for Non-Option Types:**
 
 ```rust
 #[derive(Deserialize)]
-pub struct Config {
-    pub name: String, // Required field
-    #[serde(default)]
-    pub tags: Vec<String>,      // Defaults to empty vec if missing
-    #[serde(default = "default_timeout")]
-    pub timeout: u64,           // Custom default if missing
+struct Config {
+    // Without default - field must be present
+    required_field: String,
+    
+    // With default - uses Default::default() if missing
+    optional_count: usize,  // Missing → 0
+    optional_name: String,  // Missing → ""
 }
 
-fn default_timeout() -> u64 { 30 }
-// Without #[serde(default)] on tags:
-// {"name":"test"} would ERROR because tags is missing
-
-// With #[serde(default)] on tags:
-// {"name":"test"} → Config { name: "test", tags: vec![], timeout: 30 }
+// This works even if optional_count and optional_name are missing:
+let json = r#"{"required_field":"value"}"#;
+let config: Config = serde_json::from_str(json)?;
+// config.optional_count = 0
+// config.optional_name = ""
 ```
+
+
 ### Configuration Deserialization
 
 ```rust
@@ -1849,7 +1859,7 @@ pub struct Config {
 impl Config {
     pub fn load() -> Result<Self> {
         let config = ConfigBuilder::builder()
-            .add_source(File::with_name("config").required(false))
+            .add_source(File::with_name("config.toml").required(false))
             //          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
             // Load from config.toml, config.json, etc.
             
@@ -1898,17 +1908,19 @@ values = ["rust", "async", "tokio", "performance"]
 # Override specific values
 export APP_HTTP_TIMEOUT_SECS=20
 export APP_FETCHER_MAX_CONCURRENT_REQUESTS=50
-export APP_KEYWORDS_VALUES="rust,async,web"
+export APP_KEYWORDS_VALUES__0=rust
+export APP_KEYWORDS_VALUES__1=async
+export APP_KEYWORDS_VALUES__2=web
 
 # Run program - environment vars take precedence
 cargo run
 ```
 
 
-### Custom Serialization
+### Custom Serialization (Optional Advanced Pattern)
 
 ```rust
-// Custom serialization format
+// Custom serialization format (not used in this codebase, but useful to know)
 use serde::{Deserialize, Deserializer};
 
 #[derive(Deserialize)]
@@ -2044,22 +2056,6 @@ http::get("https://example.com");
 // Or:
 use my_lib::network::http::get;
 get("https://example.com");
-```
-
-
-### Re-exports
-
-```rust
-// src/error.rs
-pub use thiserror::Error;
-//  ^^^
-// Re-export Error trait so users don't need to import thiserror
-
-// Now users can:
-use my_crate::error::Error;  // ✅ Works
-
-// Instead of:
-use thiserror::Error;  // Don't need to know about thiserror
 ```
 
 
@@ -2320,7 +2316,7 @@ stream::iter(futures)              // Create stream of futures
 - **Ownership**: Every value has one owner; no garbage collection needed
 - **Borrowing**: Temporary access without ownership transfer
 - **Lifetimes**: Compiler ensures references are always valid
-- **Result**: Zero runtime overhead, all checked at compile time
+- **Result**: Explicit, type-checked error handling with minimal runtime overhead
 
 
 ### Concurrency
@@ -2356,27 +2352,28 @@ stream::iter(futures)              // Create stream of futures
 - Prefer ? operator for error propagation
 - Use Arc for shared data, spawn_blocking for CPU work
 - Configure via files and environment variables
+- Option<T> automatically handles missing fields as None
 
 This project demonstrates how Rust's features combine to create safe, fast, concurrent systems with minimal runtime overhead and maximum compile-time guarantees.
 <span style="display:none">[^1][^2][^3][^4][^5][^6][^7][^8][^9]</span>
 
 <div align="center">⁂</div>
 
-[^1]: https://doc.rust-lang.org/rust-by-example/
+[^1]: https://github.com/serde-rs/serde/issues/1150
 
-[^2]: https://rust-lang.org/learn/
+[^2]: https://users.rust-lang.org/t/basic-custom-serde-logic-for-serialize-and-deserialize/112743
 
-[^3]: https://www.w3schools.com/rust/
+[^3]: https://stackoverflow.com/questions/63306229/how-to-pass-options-to-rusts-serde-that-can-be-accessed-in-deserializedeseria
 
-[^4]: https://www.upskillcampus.com/blog/rust-programming-language-tutorial/
+[^4]: https://www.reddit.com/r/rust/comments/1d9w7h6/deserializing_large_json_responses_with_option/
 
-[^5]: https://google.github.io/comprehensive-rust/
+[^5]: https://leapcell.io/blog/decoding-data-with-serde-in-rust-for-optimal-performance
 
-[^6]: https://www.youtube.com/watch?v=BpPEoZW5IiY
+[^6]: https://bgrande.de/blog/custom-deserialization-of-multiple-type-field-from-json-in-rust/
 
-[^7]: https://www.reddit.com/r/rust/comments/15b9rl5/rust_tutorial_that_actually_teaches_rust/
+[^7]: https://serde.rs
 
-[^8]: https://www.geeksforgeeks.org/rust/introduction-to-rust-programming-language/
+[^8]: https://www.joshmcguigan.com/blog/understanding-serde/
 
-[^9]: https://blog.jetbrains.com/rust/2024/09/20/how-to-learn-rust/
+[^9]: https://news.ycombinator.com/item?id=28870557
 
