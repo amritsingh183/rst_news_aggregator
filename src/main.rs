@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
         .pool_max_idle_per_host(CONFIG.http.pool_max_idle_per_host)
         .user_agent("article-aggregator/0.1.0")
         .build()
-        .map_err(|e| AppError::http_error("client", e))?; // Fixed
+        .map_err(|e| AppError::http_error("client", e))?;
 
     let cancel_token = CancellationToken::new();
     let shutdown_token = cancel_token.clone();
@@ -93,7 +93,7 @@ async fn main() -> Result<()> {
 
     if articles.is_empty() {
         error!("No articles were successfully fetched");
-        return Err(AppError::NoArticlesError("all sources".to_string())); // Fixed
+        return Err(AppError::NoArticlesError("all sources".to_string()));
     }
 
     info!(
@@ -108,13 +108,12 @@ async fn main() -> Result<()> {
 
     let keywords = CONFIG.keywords.values.clone();
 
-    // Double-? is correct: first handles JoinError, second handles Result<Vec<ScoredArticle>>
+    //first ? handles JoinError, second handles ? Result<Vec<ScoredArticle>>
     let scored_articles =
         tokio::task::spawn_blocking(move || analyzer::score_articles(articles, &keywords))
             .await
             .map_err(|e| {
                 AppError::parse_error("analyzer", format!("Analysis task panicked: {}", e))
-                // Fixed
             })??;
 
     if cancel_token.is_cancelled() {

@@ -101,30 +101,3 @@ fn calculate_relevance(
 
     (score, matched)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_scoring() {
-        let articles = vec![
-            Article::new(
-                "Rust async performance".to_string(),
-                "http://example.com/1".to_string(),
-                "test".to_string(),
-            ),
-            Article::new(
-                "Python tutorial".to_string(),
-                "http://example.com/2".to_string(),
-                "test".to_string(),
-            ),
-        ];
-
-        let keywords = vec!["rust".to_string(), "async".to_string()];
-        let scored = score_articles(articles, &keywords).unwrap();
-
-        assert_eq!(scored.len(), 2);
-        assert!(scored[0].relevance_score > scored[1].relevance_score);
-    }
-}

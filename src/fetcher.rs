@@ -255,15 +255,3 @@ impl Fetcher {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_retry_logic() {
-        // Integration tests can use wiremock or mockito;
-        // omitted here for brevity.
-        let _ = ();
-    }
-}
