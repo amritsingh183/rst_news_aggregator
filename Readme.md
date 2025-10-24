@@ -1,4 +1,8 @@
-# News aggregator in Rust
+# New to Rust? 
+
+Checkout my articles at https://amritsingh183.github.io/
+
+# News aggregator in Rust 
 
 A fast, async Rust tool that fetches top stories from Hacker News, enriches them into typed articles, scores relevance using Aho–Corasick keyword matching in parallel with Rayon, and exposes clean building blocks for serialization, metrics, and robust error handling.
 
