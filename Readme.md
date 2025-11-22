@@ -1,4 +1,8 @@
-# News aggregator in Rust
+# New to Rust? 
+
+Checkout my articles at https://amritsingh183.github.io/
+
+# News aggregator in Rust 
 
 A fast, async Rust tool that fetches top stories from Hacker News, enriches them into typed articles, scores relevance using Aho–Corasick keyword matching in parallel with Rayon, and exposes clean building blocks for serialization, metrics, and robust error handling.
 
@@ -150,17 +154,6 @@ src/
 ## Design notes
 - Encapsulation with private fields and public getters maintains invariants while providing a small, stable API surface for integration.
 - Trait-driven, generic utilities like fetch_with_retry<F, Fut, T> keep async workflows composable and testable without runtime overhead.
-
-## Roadmap ideas
-- Add CLI flags for output formatting, keyword management, and limits to complement config-based operation in diverse environments.
-- Expose an optional HTTP API or write-to-file mode for downstream systems that expect NDJSON or batched JSON artifacts.
-
-## Acknowledgements
-- Built as an educational and practical reference for safe, concurrent Rust systems that combine async I/O with parallel computation effectively.
-- Demonstrates compiler-enforced safety around ownership, borrowing, and lifetimes without sacrificing ergonomics or performance.
-
-## License
-- Choose and add a LICENSE file to clarify usage; MIT or Apache-2.0 are common for Rust libraries and tools of this nature.
 
 ## Disclaimer
 - Ensure scraping adheres to target site policies and apply conservative rate limits to remain a good citizen of the web.
