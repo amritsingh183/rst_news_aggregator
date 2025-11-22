@@ -1,0 +1,3 @@
+[alias]
+check = "clippy --all-targets --all-features -- -D warnings"
+c = "clippy --all-targets --all-features -- -D warnings"

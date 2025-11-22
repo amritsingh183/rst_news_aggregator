@@ -1,3 +1,29 @@
+// Allow non snake case
+#![allow(non_snake_case)]
+// === PANIC PREVENTION ===
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+#![deny(clippy::panic)]
+#![deny(clippy::unreachable)]
+#![deny(clippy::unimplemented)]
+#![deny(clippy::todo)]
+#![deny(clippy::indexing_slicing)]
+#![deny(clippy::missing_panics_doc)]
+// === ARITHMETIC SAFETY ===
+#![deny(clippy::arithmetic_side_effects)]
+#![deny(clippy::integer_division)]
+#![deny(clippy::cast_possible_truncation)]
+#![deny(clippy::cast_possible_wrap)]
+#![deny(clippy::cast_sign_loss)]
+#![deny(clippy::cast_precision_loss)]
+// === MEMORY SAFETY ===
+#![deny(clippy::mem_forget)]
+#![deny(clippy::large_stack_arrays)]
+#![deny(clippy::fn_to_numeric_cast_any)]
+// === CODE QUALITY ===
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::nursery)]
 mod analyzer;
 mod config;
 mod error;
@@ -18,107 +44,108 @@ use tracing::{error, info, warn};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .with_thread_ids(true)
-        .json()
-        .init();
+	tracing_subscriber::fmt()
+		.with_env_filter(
+			tracing_subscriber::EnvFilter::try_from_default_env()
+				.unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+		)
+		.with_target(false)
+		.with_thread_ids(true)
+		.json()
+		.init();
 
-    info!("Starting article aggregator");
+	info!("Starting article aggregator");
 
-    // Load and validate configuration explicitly
-    let config = Config::load()?;
-    
-    info!(
-        timeout_secs = config.http.timeout_secs,
-        max_concurrent = config.fetcher.max_concurrent_requests,
-        rate_limit = config.rate_limit.requests_per_second,
-        rayon_threads = config.analyzer.rayon_threads,
-        "Configuration loaded"
-    );
+	// Load and validate configuration explicitly
+	let config = Config::load()?;
 
-    analyzer::init_rayon_pool(config.analyzer.rayon_threads);
+	info!(
+		timeout_secs = config.http.timeout_secs,
+		max_concurrent = config.fetcher.max_concurrent_requests,
+		rate_limit = config.rate_limit.requests_per_second,
+		rayon_threads = config.analyzer.rayon_threads,
+		"Configuration loaded"
+	);
 
-    let client = Client::builder()
-        .timeout(config.timeout())
-        .pool_max_idle_per_host(config.http.pool_max_idle_per_host)
-        .build()
-        .map_err(|e| AppError::ConfigError(format!("Failed to build HTTP client: {e}")))?;
+	analyzer::init_rayon_pool(config.analyzer.rayon_threads)
+		.map_err(|e| AppError::ConfigError(format!("can not init thread pool: {e}")))?;
 
-    let cancel_token = CancellationToken::new();
-    let cancel_clone = cancel_token.clone();
+	let client = Client::builder()
+		.timeout(config.timeout())
+		.pool_max_idle_per_host(config.http.pool_max_idle_per_host)
+		.build()
+		.map_err(|e| AppError::ConfigError(format!("Failed to build HTTP client: {e}")))?;
 
-    tokio::spawn(async move {
-        match signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Shutdown signal received");
-                cancel_clone.cancel();
-            }
-            Err(err) => {
-                error!(error = %err, "Failed to listen for shutdown signal");
-            }
-        }
-    });
+	let cancel_token = CancellationToken::new();
+	let cancel_clone = cancel_token.clone();
 
-    let metrics = Metrics::new();
-    let fetcher = Fetcher::new(client, cancel_token.clone(), metrics.clone(), &config);
+	tokio::spawn(async move {
+		match signal::ctrl_c().await {
+			Ok(()) => {
+				info!("Shutdown signal received");
+				cancel_clone.cancel();
+			}
+			Err(err) => {
+				error!(error = %err, "Failed to listen for shutdown signal");
+			}
+		}
+	});
 
-    match run_aggregator(fetcher, &config).await {
-        Ok(scored) => {
-            display_results(&scored);
-            metrics.log_summary();
-            Ok(())
-        }
-        Err(e) if matches!(e, AppError::ShutdownError) => {
-            warn!("Gracefully shutting down");
-            metrics.log_summary();
-            Ok(())
-        }
-        Err(e) => {
-            error!(error = %e, "Aggregator failed");
-            metrics.log_summary();
-            Err(e)
-        }
-    }
+	let metrics = Metrics::new();
+	let fetcher = Fetcher::new(client, cancel_token.clone(), metrics.clone(), &config);
+
+	match run_aggregator(fetcher, &config).await {
+		Ok(scored) => {
+			display_results(&scored);
+			metrics.log_summary();
+			Ok(())
+		}
+		Err(e) if matches!(e, AppError::ShutdownError) => {
+			warn!("Gracefully shutting down");
+			metrics.log_summary();
+			Ok(())
+		}
+		Err(e) => {
+			error!(error = %e, "Aggregator failed");
+			metrics.log_summary();
+			Err(e)
+		}
+	}
 }
 
 async fn run_aggregator(fetcher: Fetcher, config: &Config) -> Result<Vec<ScoredArticle>> {
-    let articles = fetcher.fetch_all().await?;
+	let articles = fetcher.fetch_all().await?;
 
-    if articles.is_empty() {
-        warn!("No articles fetched from any source");
-        return Ok(Vec::new());
-    }
+	if articles.is_empty() {
+		warn!("No articles fetched from any source");
+		return Ok(Vec::new());
+	}
 
-    info!(count = articles.len(), "Fetched articles successfully");
+	info!(count = articles.len(), "Fetched articles successfully");
 
-    let mut scored = analyzer::score_articles(articles, &config.keywords.values)?;
-    
-    // Filter out NaN scores and sort
-    scored.retain(|article| article.relevance_score().is_finite());
-    scored.sort_by(|a, b| {
-        b.relevance_score()
-            .partial_cmp(&a.relevance_score())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+	let mut scored = analyzer::score_articles(articles, &config.keywords.values)?;
 
-    Ok(scored)
+	// Filter out NaN scores and sort
+	scored.retain(|article| article.relevance_score().is_finite());
+	scored.sort_by(|a, b| {
+		b.relevance_score()
+			.partial_cmp(&a.relevance_score())
+			.unwrap_or(std::cmp::Ordering::Equal)
+	});
+
+	Ok(scored)
 }
 
 fn display_results(articles: &[ScoredArticle]) {
-    info!("=== Top Relevant Articles ===");
-    for (i, scored) in articles.iter().take(10).enumerate() {
-        info!(
-            rank = i + 1,
-            score = format!("{:.2}", scored.relevance_score()),
-            title = scored.article().title(),
-            source = scored.article().source(),
-            url = scored.article().url(),
-            keywords = ?scored.matched_keywords(),
-        );
-    }
+	info!("=== Top Relevant Articles ===");
+	for (i, scored) in articles.iter().take(10).enumerate() {
+		info!(
+			rank = i + 1,
+			score = format!("{:.2}", scored.relevance_score()),
+			title = scored.article().title(),
+			source = scored.article().source(),
+			url = scored.article().url(),
+			keywords = ?scored.matched_keywords(),
+		);
+	}
 }
